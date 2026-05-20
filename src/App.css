@@ -103,6 +103,77 @@
   gap: 14px;
 }
 
+.room-section {
+  display: grid;
+  gap: 12px;
+}
+
+.sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: var(--ink);
+  background: rgba(255, 253, 248, 0.78);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.sync-pill span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.sync-pill.is-online span {
+  background: var(--green);
+}
+
+.sync-pill.is-connecting span {
+  background: var(--gold);
+}
+
+.sync-pill.is-offline span,
+.sync-pill.is-needs-config span {
+  background: var(--coral);
+}
+
+.room-id {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--muted);
+  background: rgba(255, 253, 248, 0.66);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  background: transparent;
+  font-weight: 900;
+}
+
+.room-button:hover {
+  border-color: var(--teal);
+  background: rgba(36, 124, 138, 0.08);
+}
+
 .identity-editor label {
   display: grid;
   gap: 7px;

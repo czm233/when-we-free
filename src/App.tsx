@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   CalendarCheck2,
   ChevronLeft,
   ChevronRight,
   ClipboardCopy,
+  Link2,
   Plus,
   RefreshCcw,
   Trash2,
   UsersRound,
+  Wifi,
+  WifiOff,
 } from 'lucide-react'
+import { isSupabaseConfigured, roomTableName, supabase } from './supabaseClient'
 import './App.css'
 
 type Participant = {
@@ -31,7 +35,11 @@ type CalendarDay = {
   inMonth: boolean
 }
 
+type SyncStatus = 'local' | 'needs-config' | 'connecting' | 'online' | 'offline'
+
 const STORAGE_KEY = 'when-we-free-state-v1'
+const ROOM_CACHE_PREFIX = 'when-we-free-room-state-v1:'
+const SELECTED_BY_ROOM_KEY = 'when-we-free-selected-participant-v1'
 
 const colorPalette = [
   '#E85D45',
@@ -65,6 +73,13 @@ function createId() {
   }
 
   return `p-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function createRoomId() {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function pad(value: number) {
@@ -175,9 +190,35 @@ function sanitizeState(value: unknown): PlannerState | null {
   return { participants, availability }
 }
 
-function readInitialState() {
+function readHashParam(name: string) {
   const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-  const sharedState = hashParams.get('state')
+  return hashParams.get(name)
+}
+
+function readRoomId() {
+  return readHashParam('room')?.trim() || ''
+}
+
+function setRoomHash(roomId: string) {
+  window.history.replaceState(null, '', `#room=${roomId}`)
+}
+
+function readJson<T>(key: string, fallback: T) {
+  const storedValue = window.localStorage.getItem(key)
+  if (!storedValue) {
+    return fallback
+  }
+
+  try {
+    return JSON.parse(storedValue) as T
+  } catch {
+    window.localStorage.removeItem(key)
+    return fallback
+  }
+}
+
+function readInitialState(roomId: string) {
+  const sharedState = readHashParam('state')
 
   if (sharedState) {
     const decoded = decodeState(sharedState)
@@ -186,35 +227,46 @@ function readInitialState() {
     }
   }
 
-  const storedState = window.localStorage.getItem(STORAGE_KEY)
-  if (storedState) {
-    try {
-      const decoded = sanitizeState(JSON.parse(storedState))
-      if (decoded) {
-        return decoded
-      }
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY)
+  if (roomId) {
+    const cachedState = sanitizeState(readJson(`${ROOM_CACHE_PREFIX}${roomId}`, null))
+    if (cachedState) {
+      return cachedState
     }
   }
 
-  return starterState
+  const storedState = sanitizeState(readJson(STORAGE_KEY, null))
+  return storedState ?? starterState
 }
 
 function App() {
-  const [planner, setPlanner] = useState<PlannerState>(readInitialState)
-  const [visibleMonth, setVisibleMonth] = useState(() => new Date())
-  const [activeParticipantId, setActiveParticipantId] = useState(
-    () => planner.participants[0]?.id ?? '',
+  const [roomId, setRoomId] = useState(readRoomId)
+  const [planner, setPlanner] = useState<PlannerState>(() => readInitialState(readRoomId()))
+  const [selectedParticipantByRoom, setSelectedParticipantByRoom] = useState<Record<string, string>>(
+    () => readJson(SELECTED_BY_ROOM_KEY, {}),
   )
+  const [visibleMonth, setVisibleMonth] = useState(() => new Date())
   const [newName, setNewName] = useState('')
   const [newColor, setNewColor] = useState(colorPalette[1])
   const [shareMessage, setShareMessage] = useState('')
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() => {
+    if (roomId && isSupabaseConfigured) {
+      return 'connecting'
+    }
+
+    return roomId ? 'needs-config' : 'local'
+  })
+
+  const plannerRef = useRef(planner)
+  const remoteReadyRef = useRef(false)
+  const skipRemoteSaveRef = useRef(false)
 
   const participantCount = planner.participants.length
-  const activeParticipant = planner.participants.find(
-    (participant) => participant.id === activeParticipantId,
-  )
+  const spaceKey = roomId || 'local'
+  const selectedParticipantId = selectedParticipantByRoom[spaceKey]
+  const activeParticipant =
+    planner.participants.find((participant) => participant.id === selectedParticipantId) ??
+    planner.participants[0]
+  const activeParticipantId = activeParticipant?.id ?? ''
 
   const calendarDays = useMemo(() => getCalendarDays(visibleMonth), [visibleMonth])
 
@@ -249,9 +301,160 @@ function App() {
     .sort((a, b) => b.count - a.count || a.dateKey.localeCompare(b.dateKey))
     .slice(0, 5)
 
+  const syncCopy = getSyncCopy(syncStatus, roomId)
+
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(planner))
+    plannerRef.current = planner
   }, [planner])
+
+  useEffect(() => {
+    const handler = () => {
+      const nextRoomId = readRoomId()
+      setRoomId(nextRoomId)
+      setPlanner(readInitialState(nextRoomId))
+    }
+
+    window.addEventListener('hashchange', handler)
+    return () => window.removeEventListener('hashchange', handler)
+  }, [])
+
+  useEffect(() => {
+    const cacheKey = roomId ? `${ROOM_CACHE_PREFIX}${roomId}` : STORAGE_KEY
+    window.localStorage.setItem(cacheKey, JSON.stringify(planner))
+  }, [planner, roomId])
+
+  useEffect(() => {
+    window.localStorage.setItem(SELECTED_BY_ROOM_KEY, JSON.stringify(selectedParticipantByRoom))
+  }, [selectedParticipantByRoom])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function connectRoom() {
+      remoteReadyRef.current = false
+
+      if (!roomId) {
+        if (!cancelled) {
+          setSyncStatus('local')
+        }
+        return
+      }
+
+      if (!supabase) {
+        if (!cancelled) {
+          setSyncStatus('needs-config')
+        }
+        return
+      }
+
+      setSyncStatus('connecting')
+
+      const { data, error } = await supabase
+        .from(roomTableName)
+        .select('state')
+        .eq('id', roomId)
+        .maybeSingle()
+
+      if (cancelled) {
+        return
+      }
+
+      if (error) {
+        setShareMessage(`连接房间失败：${error.message}`)
+        setSyncStatus('offline')
+        return
+      }
+
+      if (data?.state) {
+        const remoteState = sanitizeState(data.state)
+        if (remoteState) {
+          skipRemoteSaveRef.current = true
+          setPlanner(remoteState)
+        }
+      } else {
+        const { error: insertError } = await supabase
+          .from(roomTableName)
+          .upsert({ id: roomId, state: plannerRef.current })
+
+        if (insertError) {
+          setShareMessage(`创建房间失败：${insertError.message}`)
+          setSyncStatus('offline')
+          return
+        }
+      }
+
+      remoteReadyRef.current = true
+      setSyncStatus('online')
+    }
+
+    void connectRoom()
+
+    const client = supabase
+
+    if (!roomId || !client) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const channel = client
+      .channel(`when-we-free-${roomId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: roomTableName,
+          filter: `id=eq.${roomId}`,
+        },
+        (payload) => {
+          const remoteState = sanitizeState((payload.new as { state?: unknown }).state)
+          if (!remoteState) {
+            return
+          }
+
+          skipRemoteSaveRef.current = true
+          setPlanner(remoteState)
+          setSyncStatus('online')
+        },
+      )
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setSyncStatus('offline')
+        }
+      })
+
+    return () => {
+      cancelled = true
+      void client.removeChannel(channel)
+    }
+  }, [roomId])
+
+  useEffect(() => {
+    const client = supabase
+
+    if (!roomId || !client || syncStatus !== 'online' || !remoteReadyRef.current) {
+      return
+    }
+
+    if (skipRemoteSaveRef.current) {
+      skipRemoteSaveRef.current = false
+      return
+    }
+
+    const saveTimer = window.setTimeout(async () => {
+      const { error } = await client
+        .from(roomTableName)
+        .upsert({ id: roomId, state: planner })
+
+      if (error) {
+        setShareMessage(`同步失败：${error.message}`)
+        setSyncStatus('offline')
+      }
+    }, 220)
+
+    return () => window.clearTimeout(saveTimer)
+  }, [planner, roomId, syncStatus])
 
   function getAvailableIds(dateKey: string) {
     return planner.availability[dateKey] ?? []
@@ -281,6 +484,13 @@ function App() {
     setVisibleMonth(new Date())
   }
 
+  function selectActiveParticipant(id: string) {
+    setSelectedParticipantByRoom((current) => ({
+      ...current,
+      [spaceKey]: id,
+    }))
+  }
+
   function addParticipant() {
     const participant: Participant = {
       id: createId(),
@@ -292,7 +502,7 @@ function App() {
       ...current,
       participants: [...current.participants, participant],
     }))
-    setActiveParticipantId(participant.id)
+    selectActiveParticipant(participant.id)
     setNewName('')
     setNewColor(colorPalette[(participantCount + 2) % colorPalette.length])
   }
@@ -320,11 +530,6 @@ function App() {
         availability,
       }
     })
-
-    if (activeParticipantId === id) {
-      const nextParticipant = planner.participants.find((participant) => participant.id !== id)
-      setActiveParticipantId(nextParticipant?.id ?? '')
-    }
   }
 
   function toggleAvailability(dateKey: string) {
@@ -354,7 +559,43 @@ function App() {
     })
   }
 
+  function ensureRoom() {
+    if (roomId) {
+      return roomId
+    }
+
+    const nextRoomId = createRoomId()
+    setRoomHash(nextRoomId)
+    setRoomId(nextRoomId)
+    return nextRoomId
+  }
+
+  function createRealtimeRoom() {
+    if (!isSupabaseConfigured) {
+      setShareMessage('先配置 Supabase 后才能创建实时房间')
+      return
+    }
+
+    const nextRoomId = createRoomId()
+    setRoomHash(nextRoomId)
+    setRoomId(nextRoomId)
+    setShareMessage('已创建实时房间，复制链接发给其他人即可')
+  }
+
   async function copyShareLink() {
+    if (isSupabaseConfigured) {
+      const nextRoomId = ensureRoom()
+      const shareUrl = `${window.location.origin}${window.location.pathname}#room=${nextRoomId}`
+
+      try {
+        await navigator.clipboard.writeText(shareUrl)
+        setShareMessage('已复制实时房间链接')
+      } catch {
+        setShareMessage('实时房间链接已放入地址栏')
+      }
+      return
+    }
+
     const payload = encodeState(planner)
     const shareUrl = `${window.location.origin}${window.location.pathname}#state=${payload}`
 
@@ -362,9 +603,9 @@ function App() {
 
     try {
       await navigator.clipboard.writeText(shareUrl)
-      setShareMessage('已复制分享链接')
+      setShareMessage('已复制本地快照链接')
     } catch {
-      setShareMessage('链接已放入地址栏')
+      setShareMessage('本地快照链接已放入地址栏')
     }
   }
 
@@ -393,6 +634,25 @@ function App() {
 
       <section className="workspace" aria-label="聚会时间规划">
         <aside className="side-panel">
+          <section className="panel-section room-section">
+            <div className="section-heading">
+              <span>实时房间</span>
+              {syncStatus === 'online' ? <Wifi size={18} aria-hidden="true" /> : <WifiOff size={18} aria-hidden="true" />}
+            </div>
+
+            <div className={`sync-pill is-${syncStatus}`}>
+              <span />
+              {syncCopy}
+            </div>
+
+            {roomId ? <code className="room-id">{roomId}</code> : null}
+
+            <button className="room-button" type="button" onClick={createRealtimeRoom}>
+              <Link2 size={17} aria-hidden="true" />
+              新建实时房间
+            </button>
+          </section>
+
           <section className="panel-section identity-section">
             <div className="section-heading">
               <span>当前身份</span>
@@ -487,7 +747,7 @@ function App() {
                   <button
                     type="button"
                     className="person-select"
-                    onClick={() => setActiveParticipantId(participant.id)}
+                    onClick={() => selectActiveParticipant(participant.id)}
                   >
                     <span
                       className="person-dot"
@@ -621,6 +881,30 @@ function App() {
       </section>
     </main>
   )
+}
+
+function getSyncCopy(syncStatus: SyncStatus, roomId: string) {
+  if (!roomId) {
+    return isSupabaseConfigured ? '本地草稿，创建房间后实时同步' : '本地模式，未配置 Supabase'
+  }
+
+  if (syncStatus === 'online') {
+    return '实时同步中'
+  }
+
+  if (syncStatus === 'connecting') {
+    return '正在连接房间'
+  }
+
+  if (syncStatus === 'needs-config') {
+    return '缺少 Supabase 配置'
+  }
+
+  if (syncStatus === 'offline') {
+    return '同步异常，先保存在本机'
+  }
+
+  return '本地模式'
 }
 
 function formatHumanDate(dateKey: string) {
