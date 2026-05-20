@@ -13,7 +13,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react'
-import { isSupabaseConfigured, roomTableName, supabase } from './supabaseClient'
+import { isSupabaseConfigured, supabase } from './supabaseClient'
 import './App.css'
 
 type Participant = {
@@ -29,13 +29,22 @@ type PlannerState = {
   availability: Availability
 }
 
+type RoomCredentials = {
+  id: string
+  key: string
+}
+
+type RoomBroadcastPayload = {
+  state?: unknown
+}
+
 type CalendarDay = {
   date: Date
   key: string
   inMonth: boolean
 }
 
-type SyncStatus = 'local' | 'needs-config' | 'connecting' | 'online' | 'offline'
+type SyncStatus = 'local' | 'needs-config' | 'missing-key' | 'connecting' | 'online' | 'offline'
 
 const STORAGE_KEY = 'when-we-free-state-v1'
 const ROOM_CACHE_PREFIX = 'when-we-free-room-state-v1:'
@@ -75,11 +84,19 @@ function createId() {
   return `p-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-function createRoomId() {
-  const bytes = new Uint8Array(16)
+function createHexToken(byteLength: number) {
+  const bytes = new Uint8Array(byteLength)
   crypto.getRandomValues(bytes)
 
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function createRoomId() {
+  return createHexToken(16)
+}
+
+function createRoomKey() {
+  return createHexToken(32)
 }
 
 function pad(value: number) {
@@ -199,8 +216,28 @@ function readRoomId() {
   return readHashParam('room')?.trim() || ''
 }
 
-function setRoomHash(roomId: string) {
-  window.history.replaceState(null, '', `#room=${roomId}`)
+function readRoomKey() {
+  return readHashParam('key')?.trim() || ''
+}
+
+function getRoomHash(roomId: string, roomKey: string) {
+  return new URLSearchParams({ room: roomId, key: roomKey }).toString()
+}
+
+function setRoomHash(roomId: string, roomKey: string) {
+  window.history.replaceState(null, '', `#${getRoomHash(roomId, roomKey)}`)
+}
+
+function getRoomSpaceKey(roomId: string, roomKey: string) {
+  if (!roomId) {
+    return 'local'
+  }
+
+  return roomKey ? `${roomId}:${roomKey}` : roomId
+}
+
+function getPlannerCacheKey(roomId: string, roomKey: string) {
+  return roomId ? `${ROOM_CACHE_PREFIX}${getRoomSpaceKey(roomId, roomKey)}` : STORAGE_KEY
 }
 
 function readJson<T>(key: string, fallback: T) {
@@ -217,7 +254,7 @@ function readJson<T>(key: string, fallback: T) {
   }
 }
 
-function readInitialState(roomId: string) {
+function readInitialState(roomId: string, roomKey: string) {
   const sharedState = readHashParam('state')
 
   if (sharedState) {
@@ -228,7 +265,7 @@ function readInitialState(roomId: string) {
   }
 
   if (roomId) {
-    const cachedState = sanitizeState(readJson(`${ROOM_CACHE_PREFIX}${roomId}`, null))
+    const cachedState = sanitizeState(readJson(getPlannerCacheKey(roomId, roomKey), null))
     if (cachedState) {
       return cachedState
     }
@@ -240,7 +277,10 @@ function readInitialState(roomId: string) {
 
 function App() {
   const [roomId, setRoomId] = useState(readRoomId)
-  const [planner, setPlanner] = useState<PlannerState>(() => readInitialState(readRoomId()))
+  const [roomKey, setRoomKey] = useState(readRoomKey)
+  const [planner, setPlanner] = useState<PlannerState>(() =>
+    readInitialState(readRoomId(), readRoomKey()),
+  )
   const [selectedParticipantByRoom, setSelectedParticipantByRoom] = useState<Record<string, string>>(
     () => readJson(SELECTED_BY_ROOM_KEY, {}),
   )
@@ -250,7 +290,7 @@ function App() {
   const [shareMessage, setShareMessage] = useState('')
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(() => {
     if (roomId && isSupabaseConfigured) {
-      return 'connecting'
+      return roomKey ? 'connecting' : 'missing-key'
     }
 
     return roomId ? 'needs-config' : 'local'
@@ -259,9 +299,10 @@ function App() {
   const plannerRef = useRef(planner)
   const remoteReadyRef = useRef(false)
   const skipRemoteSaveRef = useRef(false)
+  const roomChannelRef = useRef<ReturnType<NonNullable<typeof supabase>['channel']> | null>(null)
 
   const participantCount = planner.participants.length
-  const spaceKey = roomId || 'local'
+  const spaceKey = getRoomSpaceKey(roomId, roomKey)
   const selectedParticipantId = selectedParticipantByRoom[spaceKey]
   const activeParticipant =
     planner.participants.find((participant) => participant.id === selectedParticipantId) ??
@@ -310,8 +351,10 @@ function App() {
   useEffect(() => {
     const handler = () => {
       const nextRoomId = readRoomId()
+      const nextRoomKey = readRoomKey()
       setRoomId(nextRoomId)
-      setPlanner(readInitialState(nextRoomId))
+      setRoomKey(nextRoomKey)
+      setPlanner(readInitialState(nextRoomId, nextRoomKey))
     }
 
     window.addEventListener('hashchange', handler)
@@ -319,9 +362,9 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const cacheKey = roomId ? `${ROOM_CACHE_PREFIX}${roomId}` : STORAGE_KEY
+    const cacheKey = getPlannerCacheKey(roomId, roomKey)
     window.localStorage.setItem(cacheKey, JSON.stringify(planner))
-  }, [planner, roomId])
+  }, [planner, roomId, roomKey])
 
   useEffect(() => {
     window.localStorage.setItem(SELECTED_BY_ROOM_KEY, JSON.stringify(selectedParticipantByRoom))
@@ -347,13 +390,20 @@ function App() {
         return
       }
 
+      if (!roomKey) {
+        if (!cancelled) {
+          setShareMessage('房间链接缺少访问密钥，请重新创建或复制完整链接')
+          setSyncStatus('missing-key')
+        }
+        return
+      }
+
       setSyncStatus('connecting')
 
-      const { data, error } = await supabase
-        .from(roomTableName)
-        .select('state')
-        .eq('id', roomId)
-        .maybeSingle()
+      const { data, error } = await supabase.rpc('get_when_we_free_room', {
+        room_id: roomId,
+        room_key: roomKey,
+      })
 
       if (cancelled) {
         return
@@ -365,16 +415,18 @@ function App() {
         return
       }
 
-      if (data?.state) {
-        const remoteState = sanitizeState(data.state)
+      if (data) {
+        const remoteState = sanitizeState(data)
         if (remoteState) {
           skipRemoteSaveRef.current = true
           setPlanner(remoteState)
         }
       } else {
-        const { error: insertError } = await supabase
-          .from(roomTableName)
-          .upsert({ id: roomId, state: plannerRef.current })
+        const { error: insertError } = await supabase.rpc('save_when_we_free_room', {
+          room_id: roomId,
+          room_key: roomKey,
+          room_state: plannerRef.current,
+        })
 
         if (insertError) {
           setShareMessage(`创建房间失败：${insertError.message}`)
@@ -391,24 +443,27 @@ function App() {
 
     const client = supabase
 
-    if (!roomId || !client) {
+    if (!roomId || !roomKey || !client) {
       return () => {
         cancelled = true
       }
     }
 
     const channel = client
-      .channel(`when-we-free-${roomId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: roomTableName,
-          filter: `id=eq.${roomId}`,
+      .channel(`when-we-free-${roomId}-${roomKey}`, {
+        config: {
+          broadcast: {
+            self: false,
+          },
         },
-        (payload) => {
-          const remoteState = sanitizeState((payload.new as { state?: unknown }).state)
+      })
+      .on(
+        'broadcast',
+        {
+          event: 'planner',
+        },
+        ({ payload }) => {
+          const remoteState = sanitizeState((payload as RoomBroadcastPayload).state)
           if (!remoteState) {
             return
           }
@@ -424,16 +479,21 @@ function App() {
         }
       })
 
+    roomChannelRef.current = channel
+
     return () => {
       cancelled = true
+      if (roomChannelRef.current === channel) {
+        roomChannelRef.current = null
+      }
       void client.removeChannel(channel)
     }
-  }, [roomId])
+  }, [roomId, roomKey])
 
   useEffect(() => {
     const client = supabase
 
-    if (!roomId || !client || syncStatus !== 'online' || !remoteReadyRef.current) {
+    if (!roomId || !roomKey || !client || syncStatus !== 'online' || !remoteReadyRef.current) {
       return
     }
 
@@ -443,18 +503,30 @@ function App() {
     }
 
     const saveTimer = window.setTimeout(async () => {
-      const { error } = await client
-        .from(roomTableName)
-        .upsert({ id: roomId, state: planner })
+      const { error } = await client.rpc('save_when_we_free_room', {
+        room_id: roomId,
+        room_key: roomKey,
+        room_state: planner,
+      })
 
       if (error) {
         setShareMessage(`同步失败：${error.message}`)
         setSyncStatus('offline')
+        return
+      }
+
+      const channel = roomChannelRef.current
+      if (channel) {
+        void channel.send({
+          type: 'broadcast',
+          event: 'planner',
+          payload: { state: planner },
+        })
       }
     }, 220)
 
     return () => window.clearTimeout(saveTimer)
-  }, [planner, roomId, syncStatus])
+  }, [planner, roomId, roomKey, syncStatus])
 
   function getAvailableIds(dateKey: string) {
     return planner.availability[dateKey] ?? []
@@ -559,15 +631,18 @@ function App() {
     })
   }
 
-  function ensureRoom() {
-    if (roomId) {
-      return roomId
+  function ensureRoom(): RoomCredentials {
+    if (roomId && roomKey) {
+      return { id: roomId, key: roomKey }
     }
 
     const nextRoomId = createRoomId()
-    setRoomHash(nextRoomId)
+    const nextRoomKey = createRoomKey()
+    setRoomHash(nextRoomId, nextRoomKey)
     setRoomId(nextRoomId)
-    return nextRoomId
+    setRoomKey(nextRoomKey)
+
+    return { id: nextRoomId, key: nextRoomKey }
   }
 
   function createRealtimeRoom() {
@@ -577,15 +652,20 @@ function App() {
     }
 
     const nextRoomId = createRoomId()
-    setRoomHash(nextRoomId)
+    const nextRoomKey = createRoomKey()
+    setRoomHash(nextRoomId, nextRoomKey)
     setRoomId(nextRoomId)
+    setRoomKey(nextRoomKey)
     setShareMessage('已创建实时房间，复制链接发给其他人即可')
   }
 
   async function copyShareLink() {
     if (isSupabaseConfigured) {
-      const nextRoomId = ensureRoom()
-      const shareUrl = `${window.location.origin}${window.location.pathname}#room=${nextRoomId}`
+      const credentials = ensureRoom()
+      const shareUrl = `${window.location.origin}${window.location.pathname}#${getRoomHash(
+        credentials.id,
+        credentials.key,
+      )}`
 
       try {
         await navigator.clipboard.writeText(shareUrl)
@@ -898,6 +978,10 @@ function getSyncCopy(syncStatus: SyncStatus, roomId: string) {
 
   if (syncStatus === 'needs-config') {
     return '缺少 Supabase 配置'
+  }
+
+  if (syncStatus === 'missing-key') {
+    return '房间链接缺少密钥'
   }
 
   if (syncStatus === 'offline') {
