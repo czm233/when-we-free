@@ -1,0 +1,47 @@
+:root {
+  --paper: #f4eadc;
+  --surface: #f8f1e6;
+  --ink: #25201a;
+  --muted: #756b5f;
+  --line: rgba(37, 32, 26, 0.12);
+  --line-strong: rgba(37, 32, 26, 0.24);
+  --teal: #247c8a;
+  --green: #2e9e6f;
+  --gold: #d8a132;
+  --coral: #e85d45;
+  font-family:
+    'Avenir Next',
+    'Hiragino Sans GB',
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  color: var(--ink);
+  background:
+    linear-gradient(90deg, rgba(37, 32, 26, 0.045) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(37, 32, 26, 0.035) 1px, transparent 1px),
+    var(--paper);
+  background-size: 34px 34px;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+#root {
+  min-height: 100svh;
+}
