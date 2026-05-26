@@ -137,7 +137,8 @@
 }
 
 .sync-pill.is-offline span,
-.sync-pill.is-needs-config span {
+.sync-pill.is-needs-config span,
+.sync-pill.is-dissolved span {
   background: var(--coral);
 }
 
@@ -172,6 +173,20 @@
 .room-button:hover {
   border-color: var(--teal);
   background: rgba(36, 124, 138, 0.08);
+}
+
+.room-button.danger {
+  color: var(--coral);
+}
+
+.room-button.danger:hover {
+  border-color: var(--coral);
+  background: rgba(232, 93, 69, 0.08);
+}
+
+.room-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .identity-editor label {
@@ -319,6 +334,12 @@ button {
   background: rgba(37, 32, 26, 0.06);
 }
 
+.person-select:disabled,
+.swatch:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .people-list {
   display: grid;
   gap: 8px;
@@ -326,7 +347,9 @@ button {
 
 .person-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-auto-flow: column;
+  grid-auto-columns: 38px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   border: 1px solid transparent;
@@ -403,7 +426,8 @@ button {
 }
 
 .empty-copy,
-.share-message {
+.share-message,
+.access-copy {
   margin: 0;
   color: var(--muted);
   font-size: 14px;
