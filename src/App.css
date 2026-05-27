@@ -138,6 +138,7 @@
 
 .sync-pill.is-offline span,
 .sync-pill.is-needs-config span,
+.sync-pill.is-not-found span,
 .sync-pill.is-dissolved span {
   background: var(--coral);
 }

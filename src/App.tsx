@@ -57,6 +57,7 @@ type SyncStatus =
   | 'connecting'
   | 'online'
   | 'offline'
+  | 'not-found'
   | 'dissolved'
 
 const STORAGE_KEY = 'when-we-free-state-v1'
@@ -678,8 +679,8 @@ function App() {
         const saveArgs = getRoomSaveArgs(plannerRef.current)
 
         if (!saveArgs) {
-          setShareMessage('当前链接只能查看房间，不能保存修改')
-          setSyncStatus(data ? 'online' : 'offline')
+          setShareMessage(data ? '当前链接只能查看房间，不能保存修改' : '房间不存在或链接已失效')
+          setSyncStatus(data ? 'online' : 'not-found')
           return
         }
 
@@ -1559,6 +1560,10 @@ function getSyncCopy(syncStatus: SyncStatus, roomId: string) {
 
   if (syncStatus === 'offline') {
     return '同步异常，先保存在本机'
+  }
+
+  if (syncStatus === 'not-found') {
+    return '房间不存在或链接已失效'
   }
 
   if (syncStatus === 'dissolved') {
