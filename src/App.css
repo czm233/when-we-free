@@ -190,6 +190,30 @@
   opacity: 0.55;
 }
 
+.identity-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 253, 248, 0.66);
+  font-weight: 900;
+}
+
+.identity-action-button:hover {
+  border-color: var(--coral);
+  color: var(--coral);
+  background: rgba(232, 93, 69, 0.08);
+}
+
+.identity-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .identity-editor label {
   display: grid;
   gap: 7px;

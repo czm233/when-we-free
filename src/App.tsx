@@ -7,7 +7,6 @@ import {
   ClipboardCopy,
   Link2,
   Plus,
-  RefreshCcw,
   Share2,
   Trash2,
   UsersRound,
@@ -1203,25 +1202,39 @@ function App() {
     }
   }
 
-  function clearAvailability() {
+  function clearCurrentParticipantAvailability() {
     if (!canEditActiveParticipant) {
       setShareMessage('当前链接只能查看房间，不能清空标注')
       return
     }
 
-    if (roomId && !hasAdminCredentials) {
-      updatePlannerLocally((current) => {
-        const availability = Object.fromEntries(
-          Object.entries(current.availability)
-            .map(([dateKey, ids]) => [
-              dateKey,
-              ids.filter((availableId) => availableId !== activeParticipantId),
-            ])
-            .filter(([, ids]) => ids.length > 0),
-        ) as Availability
+    const confirmed = window.confirm(`确定清空 ${activeParticipant?.name ?? '当前身份'} 的所有标注吗？`)
+    if (!confirmed) {
+      return
+    }
 
-        return { ...current, availability }
-      })
+    updatePlannerLocally((current) => {
+      const availability = Object.fromEntries(
+        Object.entries(current.availability)
+          .map(([dateKey, ids]) => [
+            dateKey,
+            ids.filter((availableId) => availableId !== activeParticipantId),
+          ])
+          .filter(([, ids]) => ids.length > 0),
+      ) as Availability
+
+      return { ...current, availability }
+    })
+  }
+
+  function clearAllAvailability() {
+    if (!hasAdminCredentials) {
+      setShareMessage('只有房间创建者可以清空所有标注')
+      return
+    }
+
+    const confirmed = window.confirm('确定清空所有人的全部标注吗？这个操作会影响整个房间。')
+    if (!confirmed) {
       return
     }
 
@@ -1240,14 +1253,6 @@ function App() {
           <button className="icon-text-button" type="button" onClick={copyShareLink}>
             <ClipboardCopy size={18} aria-hidden="true" />
             分享
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            onClick={clearAvailability}
-            title={roomId && !hasAdminCredentials ? '清空当前身份标注' : '清空标注'}
-          >
-            <RefreshCcw size={18} aria-hidden="true" />
           </button>
         </div>
       </header>
@@ -1272,6 +1277,17 @@ function App() {
               <Link2 size={17} aria-hidden="true" />
               新建实时房间
             </button>
+            {hasAdminCredentials ? (
+              <button
+                className="room-button danger"
+                type="button"
+                onClick={clearAllAvailability}
+                disabled={syncStatus === 'dissolved'}
+              >
+                <Trash2 size={17} aria-hidden="true" />
+                清空所有标注
+              </button>
+            ) : null}
             {hasAdminCredentials ? (
               <button
                 className="room-button danger"
@@ -1330,6 +1346,15 @@ function App() {
                     />
                   ))}
                 </div>
+                <button
+                  className="identity-action-button"
+                  type="button"
+                  onClick={clearCurrentParticipantAvailability}
+                  disabled={!canEditActiveParticipant}
+                >
+                  <Trash2 size={16} aria-hidden="true" />
+                  清空当前身份标注
+                </button>
               </div>
             ) : (
               <p className="empty-copy">先添加一个参与者</p>
