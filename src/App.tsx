@@ -556,7 +556,7 @@ function App() {
       if (participantId && participantKey) {
         return {
           ...baseArgs,
-          participant_id: null,
+          participant_id: participantId,
           participant_key: participantKey,
         }
       }
